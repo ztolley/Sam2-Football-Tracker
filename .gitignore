@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+*/.venv/
+*/venv/
+
+# Editor settings
+.vscode/
+
+# Local caches
+.mplcache/
+*/.mplcache/
+
+# Model weights and large artifacts
+*.pt
+*.pth
+*.onnx
+*.engine
+*.t7
+
+# Generated outputs
+debug/
+runs/
+*/runs/
+predict.log
+*.mp4
+*.avi
+
+# Local sample inputs
+samples/*
+!samples/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project-specific vendor content and downloads
+baseline-yolov8-deepsort/deep_sort_pytorch/
