@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import io
 import shutil
 import subprocess
@@ -32,15 +33,56 @@ import torch
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 
-WINDOW_NAME = "Select Player Box"
-REVIEW_WINDOW_NAME = "Review SAM2 Tracking"
+APP_WINDOW_NAME = "SAM2 Football Tracker"
 TRANSPORT_HEIGHT = 56
+WINDOW_RESIZE_TOLERANCE = 8
 
 
 class UserAbort(RuntimeError):
     """Raised when the user cancels from the review window or a modal step."""
 
     pass
+
+
+class WindowController:
+    """Keep one OpenCV window alive across selection, review, and modal states."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self._last_canvas_size: tuple[int, int] | None = None
+
+    def image_rect(self) -> tuple[int, int, int, int] | None:
+        try:
+            rect = cv2.getWindowImageRect(self.name)
+        except cv2.error:
+            return None
+        if rect[2] <= 0 or rect[3] <= 0:
+            return None
+        return rect
+
+    def ensure(self, canvas_shape: tuple[int, int, int], *, allow_resize: bool = True) -> None:
+        target_height, target_width = canvas_shape[:2]
+        rect = self.image_rect()
+        if rect is None:
+            cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self.name, target_width, target_height)
+        elif allow_resize and self._last_canvas_size is not None:
+            pos_x, pos_y, current_width, current_height = rect
+            last_width, last_height = self._last_canvas_size
+            size_is_unchanged = (
+                abs(current_width - last_width) <= WINDOW_RESIZE_TOLERANCE
+                and abs(current_height - last_height) <= WINDOW_RESIZE_TOLERANCE
+            )
+            if size_is_unchanged and (current_width != target_width or current_height != target_height):
+                cv2.resizeWindow(self.name, target_width, target_height)
+                cv2.moveWindow(self.name, pos_x, pos_y)
+        self._last_canvas_size = (target_width, target_height)
+
+    def is_visible(self) -> bool:
+        try:
+            return cv2.getWindowProperty(self.name, cv2.WND_PROP_VISIBLE) >= 1
+        except cv2.error:
+            return False
 
 
 class VideoFrameStore:
@@ -199,16 +241,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args(preprocess_argv(sys.argv[1:]))
 
 
-def select_box_interactively(frame_store: VideoFrameStore, frame_idx: int) -> tuple[int, int, int, int]:
+def select_box_interactively(
+    frame_store: VideoFrameStore,
+    frame_idx: int,
+    window: WindowController,
+) -> tuple[int, int, int, int]:
     """Open the requested source frame and collect a drag-box prompt."""
 
-    return select_box_on_frame(frame_store.get_frame(frame_idx))
+    return select_box_on_frame(frame_store.get_frame(frame_idx), window)
 
 
 def select_box_on_frame(
     frame: np.ndarray,
-    window_name: str = WINDOW_NAME,
-    destroy_window: bool = True,
+    window: WindowController,
+    *,
+    allow_resize: bool = True,
 ) -> tuple[int, int, int, int]:
     """Collect a drag-box selection from a raw frame using a dedicated window."""
 
@@ -232,11 +279,11 @@ def select_box_on_frame(
             selection["dragging"] = False
             selection["completed"] = True
 
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(window_name, on_mouse)
+    window.ensure(frame.shape, allow_resize=allow_resize)
+    cv2.setMouseCallback(window.name, on_mouse)
     try:
         while True:
-            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+            if not window.is_visible():
                 raise RuntimeError("No selection made.")
             display = frame.copy()
             start = selection["start"]
@@ -249,7 +296,7 @@ def select_box_on_frame(
                 if right > left and bottom > top:
                     cv2.rectangle(display, (left, top), (right, bottom), (0, 215, 255), 2, cv2.LINE_AA)
             draw_text(display, "Drag to draw box. Release to accept. Esc cancel.", (16, 32), 0.65, (255, 255, 255), 1)
-            cv2.imshow(window_name, display)
+            cv2.imshow(window.name, display)
             if selection["completed"] and start is not None and current is not None:
                 x1, y1 = start
                 x2, y2 = current
@@ -259,9 +306,7 @@ def select_box_on_frame(
             if key == 27:
                 raise RuntimeError("No selection made.")
     finally:
-        cv2.setMouseCallback(window_name, lambda *_args: None)
-        if destroy_window:
-            cv2.destroyWindow(window_name)
+        cv2.setMouseCallback(window.name, lambda *_args: None)
 
     start = selection["start"]
     current = selection["current"]
@@ -277,9 +322,57 @@ def select_box_on_frame(
     return int(left), int(top), int(right), int(bottom)
 
 
+@functools.lru_cache(maxsize=1)
+def ffmpeg_capabilities(ffmpeg_bin: str) -> tuple[set[str], set[str]]:
+    """Return the ffmpeg hardware accelerators and encoders available locally."""
+
+    hwaccels = set()
+    encoders = set()
+
+    hwaccel_result = subprocess.run(
+        [ffmpeg_bin, "-hide_banner", "-hwaccels"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if hwaccel_result.returncode == 0:
+        for line in hwaccel_result.stdout.splitlines():
+            candidate = line.strip()
+            if candidate and not candidate.endswith(":"):
+                hwaccels.add(candidate)
+
+    encoder_result = subprocess.run(
+        [ffmpeg_bin, "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if encoder_result.returncode == 0:
+        for line in encoder_result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0][0] in {"V", "A", "S"}:
+                encoders.add(parts[1])
+
+    return hwaccels, encoders
+
+
+def choose_extraction_hwaccel(ffmpeg_bin: str, preferred_device: str) -> list[str]:
+    """Pick a safe ffmpeg decode accelerator for frame extraction when available."""
+
+    hwaccels, _ = ffmpeg_capabilities(ffmpeg_bin)
+    if preferred_device == "cuda" and "cuda" in hwaccels:
+        return ["-hwaccel", "cuda"]
+    if "cuda" in hwaccels and torch.cuda.is_available():
+        return ["-hwaccel", "cuda"]
+    if "auto" in hwaccels:
+        return ["-hwaccel", "auto"]
+    return []
+
+
 def ensure_jpeg_frames(
     source_path: Path,
     frame_dir: Path,
+    preferred_device: str,
     total_frames: int | None = None,
     progress_callback=None,
 ) -> Path:
@@ -301,56 +394,73 @@ def ensure_jpeg_frames(
         "-loglevel",
         "error",
         "-nostats",
+        *choose_extraction_hwaccel(ffmpeg_bin, preferred_device),
         "-i",
         str(source_path),
         "-q:v",
         "2",
+        "-threads",
+        "0",
         "-start_number",
         "0",
         "-progress",
         "pipe:1",
         str(output_pattern),
     ]
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-    current_frame = 0
-    assert process.stdout is not None
-    for raw_line in process.stdout:
-        line = raw_line.strip()
-        if not line or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key == "frame":
-            try:
-                current_frame = int(value)
-            except ValueError:
+    extraction_error: subprocess.CalledProcessError | None = None
+    for attempt, attempt_command in enumerate((command, command[:5] + command[7:]) if "-hwaccel" in command else (command,), start=1):
+        for existing_frame in frame_dir.glob("*.jpg"):
+            existing_frame.unlink()
+        process = subprocess.Popen(
+            attempt_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        current_frame = 0
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if not line or "=" not in line:
                 continue
-            if progress_callback is not None and total_frames is not None:
-                progress_callback("Extracting video frames", min(current_frame, total_frames), total_frames, source_path.name)
-    stderr_output = process.stderr.read() if process.stderr is not None else ""
-    return_code = process.wait()
-    if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, command, output=None, stderr=stderr_output)
+            key, value = line.split("=", 1)
+            if key == "frame":
+                try:
+                    current_frame = int(value)
+                except ValueError:
+                    continue
+                if progress_callback is not None and total_frames is not None:
+                    progress_callback("Extracting video frames", min(current_frame, total_frames), total_frames, source_path.name)
+        stderr_output = process.stderr.read() if process.stderr is not None else ""
+        return_code = process.wait()
+        if return_code == 0:
+            return frame_dir
+        extraction_error = subprocess.CalledProcessError(return_code, attempt_command, output=None, stderr=stderr_output)
+        if attempt == 1 and "-hwaccel" in attempt_command:
+            continue
+        break
+    if extraction_error is not None:
+        raise extraction_error
     return frame_dir
 
 
-def build_prompts(args: argparse.Namespace, frame_store: VideoFrameStore) -> list[tuple[int, tuple[int, int, int, int]]]:
+def build_prompts(
+    args: argparse.Namespace,
+    frame_store: VideoFrameStore,
+    window: WindowController,
+) -> list[tuple[int, tuple[int, int, int, int]]]:
     """Resolve the initial prompt plus any seeded interactive/manual corrections."""
 
     prompts: list[tuple[int, tuple[int, int, int, int]]] = []
 
     initial_box = parse_box(args.box)
     if initial_box is None:
-        initial_box = select_box_interactively(frame_store, args.frame_idx)
+        initial_box = select_box_interactively(frame_store, args.frame_idx, window)
     prompts.append((args.frame_idx, initial_box))
 
     for frame_idx in args.select_frame:
-        prompts.append((frame_idx, select_box_interactively(frame_store, frame_idx)))
+        prompts.append((frame_idx, select_box_interactively(frame_store, frame_idx, window)))
 
     for prompt_value in args.prompt:
         prompts.append(parse_prompt(prompt_value))
@@ -743,6 +853,7 @@ def render_frame(
 
 
 def review_and_collect_corrections(
+    window: WindowController,
     frame_store: VideoFrameStore,
     fps: float,
     prompts: list[tuple[int, tuple[int, int, int, int]]],
@@ -786,8 +897,8 @@ def review_and_collect_corrections(
                 scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(frame_store))
             scrub_state["dragging"] = False
 
-    cv2.namedWindow(REVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(REVIEW_WINDOW_NAME, on_mouse)
+    window.ensure(canvas_shape)
+    cv2.setMouseCallback(window.name, on_mouse)
     try:
         while True:
             if scrub_state["toggle_pause"]:
@@ -814,10 +925,10 @@ def review_and_collect_corrections(
                 show_help,
                 paused,
             )
-            cv2.imshow(REVIEW_WINDOW_NAME, rendered)
+            cv2.imshow(window.name, rendered)
             key = cv2.waitKey(paused_poll_delay if paused else frame_delay) & 0xFF
 
-            if cv2.getWindowProperty(REVIEW_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+            if not window.is_visible():
                 raise UserAbort("Window closed during review.")
             if key == 255:
                 if not paused:
@@ -837,7 +948,7 @@ def review_and_collect_corrections(
             if key == 27:
                 raise UserAbort("Discarded during review.")
             if key == ord("c"):
-                corrected_box = select_box_on_frame(frame, window_name=REVIEW_WINDOW_NAME, destroy_window=False)
+                corrected_box = select_box_on_frame(frame, window, allow_resize=False)
                 prompts = upsert_prompt(prompts, current_frame, corrected_box)
                 offscreen_frames.discard(current_frame)
                 return prompts, offscreen_frames, False, current_frame, max(0, current_frame - 15)
@@ -858,8 +969,79 @@ def review_and_collect_corrections(
                 else:
                     paused = True
     finally:
-        cv2.setMouseCallback(REVIEW_WINDOW_NAME, lambda *_args: None)
+        cv2.setMouseCallback(window.name, lambda *_args: None)
     return prompts, offscreen_frames, True, None, last_frame_idx
+
+
+class FFmpegRenderWriter:
+    """Stream rendered frames into ffmpeg so encoding can use faster codecs."""
+
+    def __init__(self, output_path: Path, width: int, height: int, fps: float, encoder: str):
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            raise RuntimeError("ffmpeg is required for accelerated rendering.")
+        self.output_path = output_path
+        self._process = subprocess.Popen(
+            [
+                ffmpeg_bin,
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgr24",
+                "-s",
+                f"{width}x{height}",
+                "-r",
+                f"{fps:.6f}",
+                "-i",
+                "pipe:0",
+                "-an",
+                "-c:v",
+                encoder,
+                *([] if encoder != "h264_nvenc" else ["-preset", "p4"]),
+                *([] if encoder != "libx264" else ["-preset", "veryfast", "-crf", "18"]),
+                "-pix_fmt",
+                "yuv420p",
+                str(output_path),
+            ],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def write(self, frame: np.ndarray) -> None:
+        if self._process.stdin is None:
+            raise RuntimeError("ffmpeg render pipe is not available.")
+        try:
+            self._process.stdin.write(frame.tobytes())
+        except BrokenPipeError as exc:
+            stderr_output = self._process.stderr.read().decode("utf-8", errors="replace") if self._process.stderr else ""
+            raise RuntimeError(f"ffmpeg encoder exited early: {stderr_output.strip()}") from exc
+
+    def close(self) -> None:
+        if self._process.stdin is not None:
+            self._process.stdin.close()
+        stderr_output = self._process.stderr.read().decode("utf-8", errors="replace") if self._process.stderr else ""
+        return_code = self._process.wait()
+        if return_code != 0:
+            raise RuntimeError(stderr_output.strip() or f"ffmpeg exited with code {return_code}")
+
+
+def choose_render_writer(width: int, height: int, fps: float, output_path: Path):
+    """Prefer ffmpeg with NVENC when available and fall back to OpenCV otherwise."""
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin:
+        _, encoders = ffmpeg_capabilities(ffmpeg_bin)
+        for encoder in ("h264_nvenc", "libx264"):
+            if encoder in encoders:
+                return FFmpegRenderWriter(output_path, width, height, fps, encoder)
+
+    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open output {output_path}")
+    return writer
 
 
 def render_output(
@@ -880,9 +1062,7 @@ def render_output(
     if len(frame_store) <= 0:
         raise RuntimeError("No source frames available for rendering.")
     height, width = frame_store.frame_shape[:2]
-    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-    if not writer.isOpened():
-        raise RuntimeError(f"Could not open output {output_path}")
+    writer = choose_render_writer(width, height, fps, output_path)
 
     try:
         for frame_index in range(len(frame_store)):
@@ -908,10 +1088,14 @@ def render_output(
                 )
             )
     finally:
-        writer.release()
+        if hasattr(writer, "release"):
+            writer.release()
+        else:
+            writer.close()
 
 
 def show_review_modal(
+    window: WindowController,
     frame_store: VideoFrameStore,
     frame_idx: int,
     video_masks: dict[int, np.ndarray],
@@ -946,11 +1130,12 @@ def show_review_modal(
         True,
         (stage, current, total, detail),
     )
-    cv2.imshow(REVIEW_WINDOW_NAME, rendered)
+    window.ensure(rendered.shape)
+    cv2.imshow(window.name, rendered)
     key = cv2.waitKey(1) & 0xFF
     if key in (27, ord("q")):
         raise UserAbort("Aborted during processing.")
-    if cv2.getWindowProperty(REVIEW_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+    if not window.is_visible():
         raise UserAbort("Window closed during processing.")
 
 
@@ -961,6 +1146,7 @@ def main() -> int:
     frame_store: VideoFrameStore | ImageSequenceFrameStore | None = None
     try:
         args = parse_args()
+        window = WindowController(APP_WINDOW_NAME)
         source_path = Path(args.source).expanduser().resolve()
         project_path = Path(args.project).expanduser().resolve()
         output_dir = project_path / args.name
@@ -970,7 +1156,7 @@ def main() -> int:
         frame_store = VideoFrameStore(source_path)
         review_fps = args.fps or frame_store.fps
 
-        prompts = build_prompts(args, frame_store)
+        prompts = build_prompts(args, frame_store, window)
         offscreen_frames: set[int] = set()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             predictor = SAM2VideoPredictor.from_pretrained(
@@ -980,6 +1166,7 @@ def main() -> int:
             )
         extraction_preview_frame_idx = min(max(args.frame_idx, 0), len(frame_store) - 1)
         extraction_progress_callback = lambda stage, current, total, detail: show_review_modal(
+            window,
             frame_store,
             extraction_preview_frame_idx,
             {},
@@ -998,6 +1185,7 @@ def main() -> int:
         frame_source = ensure_jpeg_frames(
             source_path,
             frame_dir,
+            args.device,
             total_frames=len(frame_store),
             progress_callback=extraction_progress_callback,
         )
@@ -1016,6 +1204,7 @@ def main() -> int:
             if track_start_frame is not None:
                 preview_frame_idx = max(0, min(review_start_frame, len(frame_store) - 1))
                 progress_callback = lambda stage, current, total, detail: show_review_modal(
+                    window,
                     frame_store,
                     preview_frame_idx,
                     video_masks,
@@ -1043,6 +1232,7 @@ def main() -> int:
             if args.no_review:
                 break
             prompts, offscreen_frames, accepted, track_start_frame, review_start_frame = review_and_collect_corrections(
+                window,
                 frame_store,
                 review_fps,
                 prompts,
@@ -1063,6 +1253,7 @@ def main() -> int:
                 latest_box = dict(prompts)[track_start_frame]
                 video_masks[track_start_frame] = add_prompt_to_state(predictor, inference_state, track_start_frame, latest_box)
         render_progress_callback = lambda stage, current, total, detail: show_review_modal(
+            window,
             frame_store,
             min(review_start_frame, len(frame_store) - 1),
             video_masks,
