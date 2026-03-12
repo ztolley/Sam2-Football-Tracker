@@ -25,6 +25,101 @@ class UserAbort(RuntimeError):
     pass
 
 
+class VideoFrameStore:
+    def __init__(self, source_path: Path):
+        self.source_path = source_path
+        self._capture = self._open_capture()
+        self.fps = self._capture.get(cv2.CAP_PROP_FPS) or 30.0
+        self.frame_count = int(self._capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        ok, first_frame = self._capture.read()
+        if not ok:
+            raise RuntimeError(f"Could not read first frame from {source_path}")
+        self.frame_shape = first_frame.shape
+        self._cache: dict[int, np.ndarray] = {0: first_frame.copy()}
+        self._current_frame_idx = 0
+
+    def _open_capture(self) -> cv2.VideoCapture:
+        capture = cv2.VideoCapture(str(self.source_path))
+        if not capture.isOpened():
+            raise RuntimeError(f"Could not open video {self.source_path}")
+        return capture
+
+    def _reopen_at_frame(self, frame_idx: int) -> None:
+        self._capture.release()
+        self._capture = self._open_capture()
+        if frame_idx > 0:
+            self._capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+
+    def __len__(self) -> int:
+        return self.frame_count
+
+    def get_frame(self, frame_idx: int) -> np.ndarray:
+        if self.frame_count <= 0:
+            raise RuntimeError(f"No frames available in {self.source_path}")
+        clamped_frame_idx = max(0, min(frame_idx, self.frame_count - 1))
+        cached = self._cache.get(clamped_frame_idx)
+        if cached is not None:
+            return cached.copy()
+
+        for attempt in range(2):
+            if clamped_frame_idx != self._current_frame_idx + 1 or attempt > 0:
+                if attempt > 0:
+                    self._reopen_at_frame(clamped_frame_idx)
+                else:
+                    self._capture.set(cv2.CAP_PROP_POS_FRAMES, clamped_frame_idx)
+            ok, frame = self._capture.read()
+            if ok:
+                break
+        else:
+            raise RuntimeError(f"Could not read frame {clamped_frame_idx} from {self.source_path}")
+        self._current_frame_idx = clamped_frame_idx
+        self._cache[clamped_frame_idx] = frame.copy()
+        if len(self._cache) > 32:
+            oldest_frame_idx = next(iter(self._cache))
+            if oldest_frame_idx != clamped_frame_idx:
+                self._cache.pop(oldest_frame_idx, None)
+        return frame
+
+    def close(self) -> None:
+        self._capture.release()
+
+
+class ImageSequenceFrameStore:
+    def __init__(self, frame_dir: Path, fps: float):
+        self.frame_dir = frame_dir
+        self.fps = fps
+        self.frame_paths = sorted(frame_dir.glob("*.jpg"))
+        self.frame_count = len(self.frame_paths)
+        if self.frame_count <= 0:
+            raise RuntimeError(f"No extracted frames found in {frame_dir}")
+        first_frame = cv2.imread(str(self.frame_paths[0]))
+        if first_frame is None:
+            raise RuntimeError(f"Could not read extracted frame {self.frame_paths[0]}")
+        self.frame_shape = first_frame.shape
+        self._cache: dict[int, np.ndarray] = {0: first_frame}
+
+    def __len__(self) -> int:
+        return self.frame_count
+
+    def get_frame(self, frame_idx: int) -> np.ndarray:
+        clamped_frame_idx = max(0, min(frame_idx, self.frame_count - 1))
+        cached = self._cache.get(clamped_frame_idx)
+        if cached is not None:
+            return cached.copy()
+        frame = cv2.imread(str(self.frame_paths[clamped_frame_idx]))
+        if frame is None:
+            raise RuntimeError(f"Could not read extracted frame {self.frame_paths[clamped_frame_idx]}")
+        self._cache[clamped_frame_idx] = frame
+        if len(self._cache) > 32:
+            oldest_frame_idx = next(iter(self._cache))
+            if oldest_frame_idx != clamped_frame_idx:
+                self._cache.pop(oldest_frame_idx, None)
+        return frame.copy()
+
+    def close(self) -> None:
+        return None
+
+
 def preprocess_argv(argv: list[str]) -> list[str]:
     normalized: list[str] = []
     for arg in argv:
@@ -37,7 +132,11 @@ def preprocess_argv(argv: list[str]) -> list[str]:
 
 
 def detect_default_device() -> str:
-    return "mps" if torch.backends.mps.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def parse_box(value: str | None) -> tuple[int, int, int, int] | None:
@@ -78,20 +177,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args(preprocess_argv(sys.argv[1:]))
 
 
-def select_box_interactively(video_path: Path, frame_idx: int) -> tuple[int, int, int, int]:
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not open video {video_path}")
-    capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ok, frame = capture.read()
-    capture.release()
-    if not ok:
-        raise RuntimeError(f"Could not read frame {frame_idx} from {video_path}")
-
-    return select_box_on_frame(frame)
+def select_box_interactively(frame_store: VideoFrameStore, frame_idx: int) -> tuple[int, int, int, int]:
+    return select_box_on_frame(frame_store.get_frame(frame_idx))
 
 
-def select_box_on_frame(frame: np.ndarray) -> tuple[int, int, int, int]:
+def select_box_on_frame(
+    frame: np.ndarray,
+    window_name: str = WINDOW_NAME,
+    destroy_window: bool = True,
+) -> tuple[int, int, int, int]:
     selection: dict[str, tuple[int, int] | bool | None] = {
         "start": None,
         "current": None,
@@ -112,8 +206,8 @@ def select_box_on_frame(frame: np.ndarray) -> tuple[int, int, int, int]:
             selection["dragging"] = False
             selection["completed"] = True
 
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(WINDOW_NAME, on_mouse)
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(window_name, on_mouse)
     try:
         while True:
             display = frame.copy()
@@ -127,7 +221,7 @@ def select_box_on_frame(frame: np.ndarray) -> tuple[int, int, int, int]:
                 if right > left and bottom > top:
                     cv2.rectangle(display, (left, top), (right, bottom), (0, 215, 255), 2, cv2.LINE_AA)
             draw_text(display, "Drag to draw box. Release to accept. Esc cancel.", (16, 32), 0.65, (255, 255, 255), 1)
-            cv2.imshow(WINDOW_NAME, display)
+            cv2.imshow(window_name, display)
             if selection["completed"] and start is not None and current is not None:
                 x1, y1 = start
                 x2, y2 = current
@@ -137,7 +231,9 @@ def select_box_on_frame(frame: np.ndarray) -> tuple[int, int, int, int]:
             if key == 27:
                 raise RuntimeError("No selection made.")
     finally:
-        cv2.destroyWindow(WINDOW_NAME)
+        cv2.setMouseCallback(window_name, lambda *_args: None)
+        if destroy_window:
+            cv2.destroyWindow(window_name)
 
     start = selection["start"]
     current = selection["current"]
@@ -213,16 +309,16 @@ def ensure_jpeg_frames(
     return frame_dir
 
 
-def build_prompts(args: argparse.Namespace, source_path: Path) -> list[tuple[int, tuple[int, int, int, int]]]:
+def build_prompts(args: argparse.Namespace, frame_store: VideoFrameStore) -> list[tuple[int, tuple[int, int, int, int]]]:
     prompts: list[tuple[int, tuple[int, int, int, int]]] = []
 
     initial_box = parse_box(args.box)
     if initial_box is None:
-        initial_box = select_box_interactively(source_path, args.frame_idx)
+        initial_box = select_box_interactively(frame_store, args.frame_idx)
     prompts.append((args.frame_idx, initial_box))
 
     for frame_idx in args.select_frame:
-        prompts.append((frame_idx, select_box_interactively(source_path, frame_idx)))
+        prompts.append((frame_idx, select_box_interactively(frame_store, frame_idx)))
 
     for prompt_value in args.prompt:
         prompts.append(parse_prompt(prompt_value))
@@ -350,24 +446,6 @@ def mask_to_box(mask: np.ndarray) -> tuple[int, int, int, int] | None:
     if len(xs) == 0 or len(ys) == 0:
         return None
     return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
-
-
-def read_all_frames(source_path: Path) -> tuple[list[np.ndarray], float]:
-    capture = cv2.VideoCapture(str(source_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not open video {source_path}")
-
-    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
-    frames: list[np.ndarray] = []
-    try:
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            frames.append(frame)
-    finally:
-        capture.release()
-    return frames, fps
 
 
 def build_box_cache(video_masks: dict[int, np.ndarray]) -> dict[int, tuple[int, int, int, int] | None]:
@@ -590,7 +668,7 @@ def render_frame(
 
 
 def review_and_collect_corrections(
-    source_frames: list[np.ndarray],
+    frame_store: VideoFrameStore,
     fps: float,
     prompts: list[tuple[int, tuple[int, int, int, int]]],
     offscreen_frames: set[int],
@@ -601,14 +679,14 @@ def review_and_collect_corrections(
     line_width: int,
     start_frame: int,
 ) -> tuple[list[tuple[int, tuple[int, int, int, int]]], set[int], bool, int | None, int]:
-    current_frame = max(0, min(start_frame, len(source_frames) - 1))
+    current_frame = max(0, min(start_frame, len(frame_store) - 1))
     paused = False
     frame_delay = max(1, int(1000 / max(fps, 1.0)))
     paused_poll_delay = 16
-    last_frame_idx = len(source_frames) - 1
+    last_frame_idx = len(frame_store) - 1
     show_help = True
     scrub_state = {"requested_frame": None, "dragging": False, "toggle_pause": False}
-    canvas_shape = review_canvas_shape(source_frames[0].shape, True)
+    canvas_shape = review_canvas_shape(frame_store.frame_shape, True)
 
     def on_mouse(event: int, x: int, y: int, _flags: int, _param: object) -> None:
         left, top, right, bottom = timeline_geometry(canvas_shape)
@@ -618,12 +696,12 @@ def review_and_collect_corrections(
             scrub_state["toggle_pause"] = True
         elif event == cv2.EVENT_LBUTTONDOWN and on_timeline:
             scrub_state["dragging"] = True
-            scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(source_frames))
+            scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(frame_store))
         elif event == cv2.EVENT_MOUSEMOVE and scrub_state["dragging"]:
-            scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(source_frames))
+            scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(frame_store))
         elif event == cv2.EVENT_LBUTTONUP:
             if scrub_state["dragging"]:
-                scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(source_frames))
+                scrub_state["requested_frame"] = frame_from_timeline_x(x, canvas_shape, len(frame_store))
             scrub_state["dragging"] = False
 
     cv2.namedWindow(REVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -639,8 +717,9 @@ def review_and_collect_corrections(
                 paused = True
                 scrub_state["requested_frame"] = None
 
+            frame = frame_store.get_frame(current_frame)
             rendered = render_frame(
-                source_frames[current_frame],
+                frame,
                 video_masks.get(current_frame),
                 box_cache.get(current_frame),
                 is_player_visible(current_frame, prompts, offscreen_frames),
@@ -649,7 +728,7 @@ def review_and_collect_corrections(
                 line_width,
                 current_frame,
                 fps,
-                len(source_frames),
+                len(frame_store),
                 show_help,
                 paused,
             )
@@ -676,7 +755,7 @@ def review_and_collect_corrections(
             if key == 27:
                 raise UserAbort("Discarded during review.")
             if key == ord("c"):
-                corrected_box = select_box_on_frame(source_frames[current_frame])
+                corrected_box = select_box_on_frame(frame, window_name=REVIEW_WINDOW_NAME, destroy_window=False)
                 prompts = upsert_prompt(prompts, current_frame, corrected_box)
                 offscreen_frames.discard(current_frame)
                 return prompts, offscreen_frames, False, current_frame, max(0, current_frame - 15)
@@ -697,12 +776,12 @@ def review_and_collect_corrections(
                 else:
                     paused = True
     finally:
-        cv2.destroyWindow(REVIEW_WINDOW_NAME)
+        cv2.setMouseCallback(REVIEW_WINDOW_NAME, lambda *_args: None)
     return prompts, offscreen_frames, True, None, last_frame_idx
 
 
 def render_output(
-    source_frames: list[np.ndarray],
+    frame_store: VideoFrameStore,
     fps: float,
     output_path: Path,
     video_masks: dict[int, np.ndarray],
@@ -714,17 +793,18 @@ def render_output(
     line_width: int,
     progress_callback=None,
 ) -> None:
-    if not source_frames:
+    if len(frame_store) <= 0:
         raise RuntimeError("No source frames available for rendering.")
-    height, width = source_frames[0].shape[:2]
+    height, width = frame_store.frame_shape[:2]
     writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
         raise RuntimeError(f"Could not open output {output_path}")
 
     try:
-        for frame_index, frame in enumerate(source_frames):
+        for frame_index in range(len(frame_store)):
             if progress_callback is not None:
-                progress_callback("Rendering output video", frame_index + 1, len(source_frames), output_path.name)
+                progress_callback("Rendering output video", frame_index + 1, len(frame_store), output_path.name)
+            frame = frame_store.get_frame(frame_index)
             writer.write(
                 render_frame(
                     frame,
@@ -736,7 +816,7 @@ def render_output(
                     line_width,
                     frame_index,
                     fps,
-                    len(source_frames),
+                    len(frame_store),
                     False,
                     False,
                     False,
@@ -748,7 +828,7 @@ def render_output(
 
 
 def show_review_modal(
-    source_frames: list[np.ndarray],
+    frame_store: VideoFrameStore,
     frame_idx: int,
     video_masks: dict[int, np.ndarray],
     box_cache: dict[int, tuple[int, int, int, int] | None],
@@ -763,8 +843,9 @@ def show_review_modal(
     total: int,
     detail: str,
 ) -> None:
+    frame = frame_store.get_frame(frame_idx)
     rendered = render_frame(
-        source_frames[frame_idx],
+        frame,
         video_masks.get(frame_idx),
         box_cache.get(frame_idx),
         is_player_visible(frame_idx, prompts, offscreen_frames),
@@ -773,7 +854,7 @@ def show_review_modal(
         line_width,
         frame_idx,
         fps,
-        len(source_frames),
+        len(frame_store),
         False,
         True,
         True,
@@ -788,6 +869,7 @@ def show_review_modal(
 
 
 def main() -> int:
+    frame_store: VideoFrameStore | ImageSequenceFrameStore | None = None
     try:
         args = parse_args()
         source_path = Path(args.source).expanduser().resolve()
@@ -796,10 +878,10 @@ def main() -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{source_path.stem}-sam2.mp4"
         frame_dir = output_dir / f"{source_path.stem}-frames"
-        source_frames, source_fps = read_all_frames(source_path)
-        review_fps = args.fps or source_fps
+        frame_store = VideoFrameStore(source_path)
+        review_fps = args.fps or frame_store.fps
 
-        prompts = build_prompts(args, source_path)
+        prompts = build_prompts(args, frame_store)
         offscreen_frames: set[int] = set()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             predictor = SAM2VideoPredictor.from_pretrained(
@@ -807,9 +889,9 @@ def main() -> int:
                 device=args.device,
                 fill_hole_area=0,
             )
-        extraction_preview_frame_idx = min(max(args.frame_idx, 0), len(source_frames) - 1)
+        extraction_preview_frame_idx = min(max(args.frame_idx, 0), len(frame_store) - 1)
         extraction_progress_callback = lambda stage, current, total, detail: show_review_modal(
-            source_frames,
+            frame_store,
             extraction_preview_frame_idx,
             {},
             {},
@@ -827,9 +909,11 @@ def main() -> int:
         frame_source = ensure_jpeg_frames(
             source_path,
             frame_dir,
-            total_frames=len(source_frames),
+            total_frames=len(frame_store),
             progress_callback=extraction_progress_callback,
         )
+        frame_store.close()
+        frame_store = ImageSequenceFrameStore(frame_source, frame_store.fps)
         review_start_frame = min(frame_idx for frame_idx, _ in prompts)
         track_start_frame: int | None = review_start_frame
         inference_state, video_masks = initialize_tracking_state(
@@ -841,9 +925,9 @@ def main() -> int:
         box_cache = build_box_cache(video_masks)
         while True:
             if track_start_frame is not None:
-                preview_frame_idx = max(0, min(review_start_frame, len(source_frames) - 1))
+                preview_frame_idx = max(0, min(review_start_frame, len(frame_store) - 1))
                 progress_callback = lambda stage, current, total, detail: show_review_modal(
-                    source_frames,
+                    frame_store,
                     preview_frame_idx,
                     video_masks,
                     box_cache,
@@ -870,7 +954,7 @@ def main() -> int:
             if args.no_review:
                 break
             prompts, offscreen_frames, accepted, track_start_frame, review_start_frame = review_and_collect_corrections(
-                source_frames,
+                frame_store,
                 review_fps,
                 prompts,
                 offscreen_frames,
@@ -890,8 +974,8 @@ def main() -> int:
                 latest_box = dict(prompts)[track_start_frame]
                 video_masks[track_start_frame] = add_prompt_to_state(predictor, inference_state, track_start_frame, latest_box)
         render_progress_callback = lambda stage, current, total, detail: show_review_modal(
-            source_frames,
-            min(review_start_frame, len(source_frames) - 1),
+            frame_store,
+            min(review_start_frame, len(frame_store) - 1),
             video_masks,
             box_cache,
             prompts,
@@ -906,8 +990,8 @@ def main() -> int:
             detail,
         )
         render_output(
-            source_frames,
-            source_fps,
+            frame_store,
+            frame_store.fps,
             output_path,
             video_masks,
             box_cache,
@@ -922,6 +1006,10 @@ def main() -> int:
     except UserAbort:
         cv2.destroyAllWindows()
         return 0
+    finally:
+        if frame_store is not None:
+            frame_store.close()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
