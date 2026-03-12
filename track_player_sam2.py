@@ -1,3 +1,19 @@
+"""Interactive single-player football tracker built on SAM2 video prompting.
+
+The script wraps the SAM2 video predictor with a lightweight OpenCV editor:
+
+- prompt the initial player with a drag box on a chosen frame
+- run SAM2 propagation over extracted JPEG frames
+- review the track in a custom transport UI
+- add corrective boxes or mark the player off-screen
+- export a box-only annotated MP4 once the track is accepted
+
+The code is organized around three phases:
+1. input preparation: argument parsing, frame extraction, prompt collection
+2. model execution: initialize SAM2 state and re-run propagation after edits
+3. review/output UI: modal progress, transport controls, and final rendering
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -22,6 +38,8 @@ TRANSPORT_HEIGHT = 56
 
 
 class UserAbort(RuntimeError):
+    """Raised when the user cancels from the review window or a modal step."""
+
     pass
 
 
@@ -121,6 +139,8 @@ class ImageSequenceFrameStore:
 
 
 def preprocess_argv(argv: list[str]) -> list[str]:
+    """Accept `key=value` shell args and normalize them to argparse form."""
+
     normalized: list[str] = []
     for arg in argv:
         if arg.startswith("--") or "=" not in arg:
@@ -158,6 +178,8 @@ def parse_prompt(value: str) -> tuple[int, tuple[int, int, int, int]]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI flags while keeping the shell wrapper's `key=value` UX."""
+
     parser = argparse.ArgumentParser(description="Track one selected player through a video with SAM 2.")
     parser.add_argument("--source", required=True, help="Input video path")
     parser.add_argument("--name", default="sam2-selected", help="Output run name")
@@ -169,7 +191,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--box", default=None, help="Optional box prompt as x1,y1,x2,y2")
     parser.add_argument("--select-frame", action="append", type=int, default=[], help="Additional 0-based frames where an interactive correction box should be added")
     parser.add_argument("--prompt", action="append", default=[], help="Additional non-interactive correction prompt as FRAME:x1,y1,x2,y2")
-    parser.add_argument("--mask-alpha", type=float, default=0.35, help="Overlay alpha for the mask")
+    parser.add_argument("--mask-alpha", type=float, default=0.35, help="Accepted for compatibility; rendering is box-only and does not use the mask overlay.")
     parser.add_argument("--line-width", type=int, default=2, help="Bounding box line width")
     parser.add_argument("--fps", type=float, default=30.0, help="Review playback fps")
     parser.add_argument("--no-review", action="store_true", help="Skip the interactive review/correction loop")
@@ -178,6 +200,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def select_box_interactively(frame_store: VideoFrameStore, frame_idx: int) -> tuple[int, int, int, int]:
+    """Open the requested source frame and collect a drag-box prompt."""
+
     return select_box_on_frame(frame_store.get_frame(frame_idx))
 
 
@@ -186,6 +210,8 @@ def select_box_on_frame(
     window_name: str = WINDOW_NAME,
     destroy_window: bool = True,
 ) -> tuple[int, int, int, int]:
+    """Collect a drag-box selection from a raw frame using a dedicated window."""
+
     selection: dict[str, tuple[int, int] | bool | None] = {
         "start": None,
         "current": None,
@@ -210,6 +236,8 @@ def select_box_on_frame(
     cv2.setMouseCallback(window_name, on_mouse)
     try:
         while True:
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                raise RuntimeError("No selection made.")
             display = frame.copy()
             start = selection["start"]
             current = selection["current"]
@@ -255,6 +283,8 @@ def ensure_jpeg_frames(
     total_frames: int | None = None,
     progress_callback=None,
 ) -> Path:
+    """Extract source video frames to JPEG once and report progress via callback."""
+
     existing = sorted(frame_dir.glob("*.jpg"))
     if existing:
         return frame_dir
@@ -310,6 +340,8 @@ def ensure_jpeg_frames(
 
 
 def build_prompts(args: argparse.Namespace, frame_store: VideoFrameStore) -> list[tuple[int, tuple[int, int, int, int]]]:
+    """Resolve the initial prompt plus any seeded interactive/manual corrections."""
+
     prompts: list[tuple[int, tuple[int, int, int, int]]] = []
 
     initial_box = parse_box(args.box)
@@ -332,6 +364,8 @@ def upsert_prompt(
     frame_idx: int,
     box: tuple[int, int, int, int],
 ) -> list[tuple[int, tuple[int, int, int, int]]]:
+    """Replace or append a prompt for a frame while keeping frame order stable."""
+
     updated = [(existing_frame_idx, existing_box) for existing_frame_idx, existing_box in prompts if existing_frame_idx != frame_idx]
     updated.append((frame_idx, box))
     updated.sort(key=lambda item: item[0])
@@ -344,6 +378,8 @@ def add_prompt_to_state(
     frame_idx: int,
     box: tuple[int, int, int, int],
 ) -> np.ndarray:
+    """Apply a single box prompt to the current SAM2 inference state."""
+
     _, _, mask_logits = predictor.add_new_points_or_box(
         inference_state=inference_state,
         frame_idx=frame_idx,
@@ -359,6 +395,13 @@ def initialize_tracking_state(
     prompts: list[tuple[int, tuple[int, int, int, int]]],
     progress_callback=None,
 ) -> tuple[dict, dict[int, np.ndarray]]:
+    """Create the reusable SAM2 state object and seed it with initial prompts.
+
+    SAM2 loads and preprocesses all JPEG frames during `init_state`. We temporarily
+    replace its internal `tqdm` call so that frame-loading progress is surfaced in
+    the OpenCV modal rather than the terminal.
+    """
+
     original_tqdm = sam2_misc.tqdm
 
     def modal_tqdm(iterable, desc=None, **kwargs):
@@ -386,6 +429,8 @@ def initialize_tracking_state(
 
 
 def clear_tracking_from_frame(inference_state: dict, start_frame_idx: int) -> None:
+    """Drop cached propagation results from a frame onward before re-tracking."""
+
     for obj_output_dict in inference_state["output_dict_per_obj"].values():
         stale_non_cond_frames = [frame_idx for frame_idx in obj_output_dict["non_cond_frame_outputs"] if frame_idx >= start_frame_idx]
         for frame_idx in stale_non_cond_frames:
@@ -409,6 +454,13 @@ def collect_masks(
     video_masks: dict[int, np.ndarray],
     progress_callback=None,
 ) -> dict[int, np.ndarray]:
+    """Propagate the current prompts through the video from `start_frame_idx`.
+
+    This reuses the existing SAM2 inference state and only recomputes the section
+    of the video affected by the latest correction, which is much faster than
+    rebuilding the full track from frame 0 every time.
+    """
+
     stale_mask_frames = [frame_idx for frame_idx in video_masks if frame_idx >= start_frame_idx]
     for frame_idx in stale_mask_frames:
         video_masks.pop(frame_idx, None)
@@ -449,15 +501,21 @@ def mask_to_box(mask: np.ndarray) -> tuple[int, int, int, int] | None:
 
 
 def build_box_cache(video_masks: dict[int, np.ndarray]) -> dict[int, tuple[int, int, int, int] | None]:
+    """Convert binary masks to boxes once so the review UI can redraw cheaply."""
+
     return {frame_idx: mask_to_box(mask) for frame_idx, mask in video_masks.items()}
 
 
 def review_canvas_shape(frame_shape: tuple[int, int, int], show_transport: bool) -> tuple[int, int, int]:
+    """Return the composite canvas size used by the review window."""
+
     height, width = frame_shape[:2]
     return (height + (TRANSPORT_HEIGHT if show_transport else 0), width, 3)
 
 
 def timeline_geometry(frame_shape: tuple[int, int, int]) -> tuple[int, int, int, int]:
+    """Coordinates for the scrub bar inside the composite review canvas."""
+
     height, width = frame_shape[:2]
     left = 92
     right = width - 20
@@ -474,6 +532,8 @@ def frame_from_timeline_x(x: int, frame_shape: tuple[int, int, int], total_frame
 
 
 def play_button_geometry(frame_shape: tuple[int, int, int]) -> tuple[int, int, int, int]:
+    """Coordinates for the transport play/pause button."""
+
     height, _ = frame_shape[:2]
     left = 20
     right = 72
@@ -496,12 +556,16 @@ def draw_text(
     thickness: int,
     shadow_color: tuple[int, int, int] = (0, 0, 0),
 ) -> None:
+    """Draw outlined text so overlays stay readable on bright video frames."""
+
     x, y = origin
     cv2.putText(frame, text, (x + 2, y + 2), cv2.FONT_HERSHEY_SIMPLEX, scale, shadow_color, thickness + 2, cv2.LINE_AA)
     cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
 
 
 def draw_processing_modal(frame: np.ndarray, stage: str, current: int, total: int, detail: str = "") -> None:
+    """Draw a centered progress modal over the current review frame."""
+
     total = max(total, 1)
     progress = min(max(current / total, 0.0), 1.0)
     overlay = frame.copy()
@@ -545,6 +609,8 @@ def is_player_visible(
     prompts: list[tuple[int, tuple[int, int, int, int]]],
     offscreen_frames: set[int],
 ) -> bool:
+    """Resolve whether the latest prompt state says the player is on-screen."""
+
     latest_box_frame = max((prompt_frame_idx for prompt_frame_idx, _ in prompts if prompt_frame_idx <= frame_idx), default=None)
     latest_offscreen_frame = max((offscreen_frame for offscreen_frame in offscreen_frames if offscreen_frame <= frame_idx), default=None)
     if latest_box_frame is None:
@@ -555,6 +621,8 @@ def is_player_visible(
 
 
 def draw_help_panel(frame: np.ndarray, paused: bool) -> None:
+    """Render the right-side control legend used during review."""
+
     lines = [
         "Controls",
         "Space  play/pause",
@@ -615,6 +683,13 @@ def render_frame(
     show_transport: bool = True,
     modal_state: tuple[str, int, int, str] | None = None,
 ) -> np.ndarray:
+    """Compose a review or export frame.
+
+    The review window uses a taller canvas with a dedicated transport strip below
+    the video. The exported MP4 disables that transport strip and keeps only the
+    video content plus the player box label.
+    """
+
     rendered = frame.copy()
     if player_visible and mask is not None:
         if box is not None:
@@ -679,6 +754,13 @@ def review_and_collect_corrections(
     line_width: int,
     start_frame: int,
 ) -> tuple[list[tuple[int, tuple[int, int, int, int]]], set[int], bool, int | None, int]:
+    """Interactive review loop.
+
+    Returns the updated prompts/off-screen markers, whether the track was accepted,
+    the frame to restart propagation from (or `None` if no re-track is needed),
+    and the frame to reopen the review window at.
+    """
+
     current_frame = max(0, min(start_frame, len(frame_store) - 1))
     paused = False
     frame_delay = max(1, int(1000 / max(fps, 1.0)))
@@ -793,6 +875,8 @@ def render_output(
     line_width: int,
     progress_callback=None,
 ) -> None:
+    """Write the final accepted track to MP4 without review controls."""
+
     if len(frame_store) <= 0:
         raise RuntimeError("No source frames available for rendering.")
     height, width = frame_store.frame_shape[:2]
@@ -843,6 +927,8 @@ def show_review_modal(
     total: int,
     detail: str,
 ) -> None:
+    """Paint a progress modal over the review canvas during long-running work."""
+
     frame = frame_store.get_frame(frame_idx)
     rendered = render_frame(
         frame,
@@ -869,6 +955,9 @@ def show_review_modal(
 
 
 def main() -> int:
+    """Run the full prompt, track, review, and export workflow."""
+
+    output_path: Path | None = None
     frame_store: VideoFrameStore | ImageSequenceFrameStore | None = None
     try:
         args = parse_args()
@@ -1004,6 +1093,8 @@ def main() -> int:
         )
         return 0
     except UserAbort:
+        if output_path is not None and output_path.exists():
+            output_path.unlink()
         cv2.destroyAllWindows()
         return 0
     finally:
