@@ -50,6 +50,7 @@ class WindowController:
     def __init__(self, name: str):
         self.name = name
         self._last_canvas_size: tuple[int, int] | None = None
+        self._last_window_position: tuple[int, int] | None = None
 
     def image_rect(self) -> tuple[int, int, int, int] | None:
         try:
@@ -58,6 +59,7 @@ class WindowController:
             return None
         if rect[2] <= 0 or rect[3] <= 0:
             return None
+        self._last_window_position = (rect[0], rect[1])
         return rect
 
     def ensure(self, canvas_shape: tuple[int, int, int], *, allow_resize: bool = True) -> None:
@@ -66,6 +68,8 @@ class WindowController:
         if rect is None:
             cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.name, target_width, target_height)
+            if self._last_window_position is not None:
+                cv2.moveWindow(self.name, *self._last_window_position)
         elif allow_resize and self._last_canvas_size is not None:
             pos_x, pos_y, current_width, current_height = rect
             last_width, last_height = self._last_canvas_size
@@ -257,7 +261,7 @@ def select_box_on_frame(
     *,
     allow_resize: bool = True,
 ) -> tuple[int, int, int, int]:
-    """Collect a drag-box selection from a raw frame using a dedicated window."""
+    """Collect a drag-box selection on the same canvas footprint used in review."""
 
     selection: dict[str, tuple[int, int] | bool | None] = {
         "start": None,
@@ -265,38 +269,73 @@ def select_box_on_frame(
         "dragging": False,
         "completed": False,
     }
+    frame_height, frame_width = frame.shape[:2]
+    selection_canvas_shape = review_canvas_shape(frame.shape, True)
+
+    def clamp_to_frame(x: int, y: int) -> tuple[int, int]:
+        return (
+            min(max(x, 0), frame_width - 1),
+            min(max(y, 0), frame_height - 1),
+        )
+
+    def render_selection_canvas() -> np.ndarray:
+        canvas = np.full(selection_canvas_shape, 20, dtype=np.uint8)
+        canvas[:frame_height, :frame_width, :] = frame
+        cv2.rectangle(canvas, (0, frame_height), (canvas.shape[1], canvas.shape[0]), (18, 18, 18), -1)
+
+        start = selection["start"]
+        current = selection["current"]
+        if start is not None and current is not None:
+            x1, y1 = start
+            x2, y2 = current
+            left, right = sorted((x1, x2))
+            top, bottom = sorted((y1, y2))
+            if right > left and bottom > top:
+                cv2.rectangle(canvas, (left, top), (right, bottom), (0, 215, 255), 2, cv2.LINE_AA)
+
+        draw_text(
+            canvas,
+            "Drag over the player. Release to accept. Esc cancel.",
+            (16, 32),
+            0.65,
+            (255, 255, 255),
+            1,
+        )
+        draw_text(
+            canvas,
+            "Selection Mode",
+            (20, canvas.shape[0] - 20),
+            0.6,
+            (0, 215, 255),
+            1,
+        )
+        return canvas
 
     def on_mouse(event: int, x: int, y: int, _flags: int, _param: object) -> None:
-        if event == cv2.EVENT_LBUTTONDOWN:
-            selection["start"] = (x, y)
-            selection["current"] = (x, y)
+        inside_frame = 0 <= x < frame_width and 0 <= y < frame_height
+        if event == cv2.EVENT_LBUTTONDOWN and inside_frame:
+            clamped_point = clamp_to_frame(x, y)
+            selection["start"] = clamped_point
+            selection["current"] = clamped_point
             selection["dragging"] = True
             selection["completed"] = False
         elif event == cv2.EVENT_MOUSEMOVE and selection["dragging"]:
-            selection["current"] = (x, y)
+            selection["current"] = clamp_to_frame(x, y)
         elif event == cv2.EVENT_LBUTTONUP and selection["dragging"]:
-            selection["current"] = (x, y)
+            selection["current"] = clamp_to_frame(x, y)
             selection["dragging"] = False
             selection["completed"] = True
 
-    window.ensure(frame.shape, allow_resize=allow_resize)
+    window.ensure(selection_canvas_shape, allow_resize=allow_resize)
     cv2.setMouseCallback(window.name, on_mouse)
     try:
         while True:
             if not window.is_visible():
                 raise RuntimeError("No selection made.")
-            display = frame.copy()
+            display = render_selection_canvas()
+            cv2.imshow(window.name, display)
             start = selection["start"]
             current = selection["current"]
-            if start is not None and current is not None:
-                x1, y1 = start
-                x2, y2 = current
-                left, right = sorted((x1, x2))
-                top, bottom = sorted((y1, y2))
-                if right > left and bottom > top:
-                    cv2.rectangle(display, (left, top), (right, bottom), (0, 215, 255), 2, cv2.LINE_AA)
-            draw_text(display, "Drag to draw box. Release to accept. Esc cancel.", (16, 32), 0.65, (255, 255, 255), 1)
-            cv2.imshow(window.name, display)
             if selection["completed"] and start is not None and current is not None:
                 x1, y1 = start
                 x2, y2 = current
@@ -521,6 +560,9 @@ def initialize_tracking_state(
                 progress_callback("Loading frames into tracker", index, total, frame_source.name)
             yield item
 
+    # SAM2's async JPEG loader is unstable on macOS/MPS here:
+    # it can surface float64 tensors later in the session and it also
+    # interacts badly with AppKit/OpenCV window updates from background threads.
     sam2_misc.tqdm = modal_tqdm
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -528,6 +570,7 @@ def initialize_tracking_state(
                 video_path=str(frame_source),
                 offload_video_to_cpu=True,
                 offload_state_to_cpu=False,
+                async_loading_frames=False,
             )
     finally:
         sam2_misc.tqdm = original_tqdm
