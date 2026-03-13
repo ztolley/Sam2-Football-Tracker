@@ -1,90 +1,100 @@
-# SAM 2 Player Tracker
+# Football Tracker
 
-This folder contains an interactive single-player tracking workflow built on the `sam2` pip package.
+This repository now has a split frontend/backend layout for evolving the current local OpenCV workflow into a browser-driven application.
 
-Key files:
+## Layout
 
-- `.venv/`: isolated Python environment
-- `pyproject.toml`: root project metadata and Python dependencies
-- `run_sam2_track.sh`: small wrapper with examples plus the Python CLI
-- `samples/`: optional local sample videos for manual testing; ignored by Git
-- `track_player_sam2.py`: prompt, review, correction, and render workflow
+- `ui/`: Lit + TypeScript + Vite frontend with Tailwind, ESLint, and Prettier
+- `server/`: FastAPI scaffold plus the existing interactive tracking CLI
+- `scripts/`: shared bootstrap and development scripts
+- `infra/`: local MediaMTX configuration
+- `docs/`: architecture notes
+- `samples/`: optional local video inputs
 
-Setup:
+## Local development
+
+Start the optional media service:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+docker compose up -d mediamtx
+```
+
+Bootstrap the projects:
+
+```bash
+./scripts/bootstrap-server.sh
+./scripts/bootstrap-ui.sh
+```
+
+Run the dev servers:
+
+```bash
+./scripts/dev-server.sh
+./scripts/dev-ui.sh
+```
+
+The Vite dev server proxies `/api` and `/media` to `http://127.0.0.1:8000`, so local UI development stays free of CORS work.
+
+## First browser iteration
+
+The current web flow supports:
+
+- uploading a source video into the backend
+- listing stored uploads
+- previewing the selected video in the browser
+- pausing the selected video and drawing a player box directly on it
+- submitting later paused box draws as corrections
+- marking the player off-screen from the video overlay
+- rendering a final output movie from the current tracked state
+
+The next UI iteration is replacing the native video controls with a custom scrubber and connecting these actions to real background tracking work.
+
+## Automated tests
+
+The repo now includes a deterministic synthetic-video workflow test:
+
+- `server/tests/test_render_workflow.py` generates a 480p moving-dot video, runs the tracking workflow, renders a final MP4, and checks the rendered highlight is where it should be
+- `ui/e2e/player-workflow.spec.ts` drives the browser flow end to end with Playwright against isolated local test servers
+
+Run them with:
+
+```bash
+cd server && ./.venv/bin/pytest
+cd ui && npm run test:e2e
+```
+
+To clear synthetic browser-test uploads and generated movies:
+
+```bash
+./scripts/clear-test-artifacts.sh
+```
+
+There is also an optional real-SAM2 smoke test that uses the same synthetic video but only checks that the real backend can complete processing and render an output:
+
+```bash
+cd server && SAM2_RUN_REAL_TRACKER_SMOKE=1 ./.venv/bin/pytest tests/test_real_tracker_smoke.py
+```
+
+## Current backend CLI
+
+The existing local tracker is still available:
+
+```bash
+./scripts/track-local.sh source=~/Movies/football/bm4.mp4 frame-idx=47
 ```
 
 Requirements:
 
-- Python `>=3.10`
+- Python `3.13`
+- Node.js `22+`
 - `ffmpeg` on the system path
-- the Python dependencies in `pyproject.toml`
+- Docker if you want the optional `mediamtx` service locally
 
-Dependency notes:
+## Deployment direction
 
-- `sam2` is pinned to `1.1.0` in `pyproject.toml`
-- `torch>=2.5.1` and `torchvision>=0.20.1` match the current SAM 2 package requirements
-- the remaining packages are expressed as minimum versions rather than exact pins, so newer compatible releases may install
+The current layout is meant to support:
 
-As of March 11, 2026, `sam2==1.1.0` is still the current PyPI release. The project keeps the SAM2 pin, but otherwise prefers minimum-version constraints so the environment can absorb routine upstream package updates.
+- local macOS development on Apple Silicon
+- Linux AMD64 deployment with NVIDIA GPUs under RKE2
 
-Local-only folders:
-
-- `debug/` is disposable output from ad hoc inspection/debugging and is ignored by Git.
-- `samples/` can hold local test videos and is ignored by Git except for a placeholder file.
-
-Typical usage:
-
-```bash
-./run_sam2_track.sh source=~/Movies/football/bm4.mp4 frame-idx=47
-```
-
-Default workflow:
-
-- draw the initial box on the requested frame
-- wait while frame extraction, frame loading, tracking, and rendering progress are shown in the review window
-- review the tracked video in an OpenCV window with a transport strip below the video
-- use the play/pause button or `Space` to pause/resume
-- click or drag the bottom timeline to scrub
-- press `c` at a bad frame to redraw the player box there and recompute from that frame onward
-- press `x` when the player leaves the frame so later frames are not highlighted until another box is added
-- press `a` / `d` to step backward/forward while paused
-- press `q` to accept and save the final render
-- press `Esc` or close the window to quit without saving
-
-For a non-interactive seeded run:
-
-```bash
-./run_sam2_track.sh source=~/Movies/football/bm4.mp4 frame-idx=47 box=321,339,365,417
-```
-
-If you want to skip the review window and provide correction prompts up front, add one or more later frames:
-
-```bash
-./run_sam2_track.sh source=~/Movies/football/bm4.mp4 frame-idx=47 select-frame=840 name=bm4-sam2-corrected
-```
-
-That command will ask you to draw a box on frame 47 and again on frame 840. Use additional `select-frame=` arguments for more corrections if needed.
-
-Player label example:
-
-```bash
-./run_sam2_track.sh source=~/Movies/football/bm4.mp4 frame-idx=47 player-name="QB 12"
-```
-
-Current output behavior:
-
-- the final MP4 uses a box-only highlight plus the player label
-- the editing transport controls are not written into the exported video
-- if the player is marked off-screen, the output simply stops highlighting them until a later corrective box is added
-
-Wrapper help:
-
-```bash
-./run_sam2_track.sh --wrapper-help
-./run_sam2_track.sh --help
-```
+If the MPS/CUDA divergence becomes a productivity problem, the next logical step is Tilt with the server and worker running in the cluster while the UI still hot-reloads locally.

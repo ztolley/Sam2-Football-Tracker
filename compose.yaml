@@ -1,0 +1,16 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: sam2-tracker-mediamtx
+    ports:
+      - "8554:8554"
+      - "8888:8888"
+      - "8889:8889"
+      - "8189:8189/udp"
+    volumes:
+      - ./infra/mediamtx.yml:/mediamtx.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9997/v3/config/global/get"]
+      interval: 15s
+      timeout: 5s
+      retries: 5

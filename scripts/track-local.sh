@@ -3,11 +3,12 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
-PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+SERVER_DIR="$ROOT_DIR/../server"
+PYTHON_BIN="$SERVER_DIR/.venv/bin/python"
 
 show_wrapper_help() {
   cat <<'EOF'
-Wrapper around `track_player_sam2.py`.
+Wrapper around the Football Tracker local review flow.
 
 Examples:
   ./run_sam2_track.sh source=~/Movies/football/bm4.mp4 frame-idx=47
@@ -26,7 +27,7 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-cd "$ROOT_DIR"
+cd "$SERVER_DIR"
 
 if [[ ${1:-} == "--wrapper-help" ]]; then
   show_wrapper_help
@@ -38,4 +39,4 @@ if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
   echo
 fi
 
-exec "$PYTHON_BIN" track_player_sam2.py "$@"
+exec "$PYTHON_BIN" -m football_tracker.tracking.interactive "$@"

@@ -33,7 +33,7 @@ import torch
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 
-APP_WINDOW_NAME = "SAM2 Football Tracker"
+APP_WINDOW_NAME = "Football Tracker"
 TRANSPORT_HEIGHT = 56
 WINDOW_RESIZE_TOLERANCE = 8
 
@@ -228,7 +228,7 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Track one selected player through a video with SAM 2.")
     parser.add_argument("--source", required=True, help="Input video path")
-    parser.add_argument("--name", default="sam2-selected", help="Output run name")
+    parser.add_argument("--name", default="football-tracker-selected", help="Output run name")
     parser.add_argument("--player-name", default="selected player", help="Label to draw for the tracked player")
     parser.add_argument("--project", default="runs", help="Output project directory")
     parser.add_argument("--model-id", default="facebook/sam2.1-hiera-base-plus", help="Hugging Face SAM 2 model id")
@@ -734,7 +734,7 @@ def draw_processing_modal(frame: np.ndarray, stage: str, current: int, total: in
     cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
     cv2.rectangle(frame, (x1, y1), (x2, y2), (96, 96, 96), 2)
 
-    draw_text(frame, "SAM2 Tracker", (x1 + 30, y1 + 44), 1.0, (245, 245, 245), 2)
+    draw_text(frame, "Football Tracker", (x1 + 30, y1 + 44), 1.0, (245, 245, 245), 2)
     draw_text(frame, stage, (x1 + 30, y1 + 88), 0.92, (0, 215, 255), 2)
 
     bar_left = x1 + 30
@@ -844,11 +844,19 @@ def render_frame(
     """
 
     rendered = frame.copy()
-    if player_visible and mask is not None:
-        if box is not None:
-            x1, y1, x2, y2 = box
-            cv2.rectangle(rendered, (x1, y1), (x2, y2), (0, 215, 255), line_width, cv2.LINE_AA)
-            cv2.putText(rendered, player_name, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 215, 255), 2, cv2.LINE_AA)
+    if player_visible and box is not None:
+        x1, y1, x2, y2 = box
+        cv2.rectangle(rendered, (x1, y1), (x2, y2), (0, 215, 255), line_width, cv2.LINE_AA)
+        cv2.putText(
+            rendered,
+            player_name,
+            (x1, max(20, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 215, 255),
+            2,
+            cv2.LINE_AA,
+        )
     total_frames = max(total_frames, 1)
     seconds = frame_index / max(fps, 1.0)
     total_seconds = (total_frames - 1) / max(fps, 1.0)
@@ -1194,7 +1202,7 @@ def main() -> int:
         project_path = Path(args.project).expanduser().resolve()
         output_dir = project_path / args.name
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{source_path.stem}-sam2.mp4"
+        output_path = output_dir / f"{source_path.stem}-tracked.mp4"
         frame_dir = output_dir / f"{source_path.stem}-frames"
         frame_store = VideoFrameStore(source_path)
         review_fps = args.fps or frame_store.fps

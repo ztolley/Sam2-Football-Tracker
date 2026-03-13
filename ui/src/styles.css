@@ -1,0 +1,32 @@
+@import '@fontsource/ibm-plex-mono';
+@import '@fontsource/space-grotesk';
+@import 'tailwindcss';
+
+:root {
+  color: #f7f7ff;
+  background:
+    radial-gradient(circle at top left, rgba(255, 0, 146, 0.22), transparent 28%),
+    radial-gradient(circle at top right, rgba(0, 240, 255, 0.18), transparent 34%),
+    radial-gradient(circle at bottom center, rgba(194, 255, 0, 0.12), transparent 30%),
+    linear-gradient(180deg, #14001f 0%, #090312 46%, #06070c 100%);
+  font-family: 'Space Grotesk', sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+code {
+  border: 1px solid rgba(0, 240, 255, 0.32);
+  border-radius: 999px;
+  background: rgba(0, 240, 255, 0.12);
+  padding: 0.1rem 0.55rem;
+  color: #8cf7ff;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.9em;
+}
