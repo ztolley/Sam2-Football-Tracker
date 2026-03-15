@@ -1,0 +1,85 @@
+@layer components {
+  .tracker-processing-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 8, 18, 0.8);
+    backdrop-filter: blur(6px);
+  }
+
+  .tracker-processing-modal {
+    width: min(420px, 88%);
+    border: 1px solid rgba(103, 232, 249, 0.4);
+    border-radius: 24px;
+    background: rgba(19, 7, 31, 0.92);
+    padding: 1.25rem 1.5rem;
+    box-shadow:
+      0 0 0 1px rgba(34, 211, 238, 0.12),
+      0 0 38px rgba(217, 70, 239, 0.12),
+      0 20px 60px rgba(0, 0, 0, 0.4);
+  }
+
+  .tracker-processing-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .tracker-processing-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: rgb(253 244 255);
+  }
+
+  .tracker-processing-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.875rem;
+    color: rgb(165 243 252);
+    filter: drop-shadow(0 0 10px rgba(34, 211, 238, 0.4));
+  }
+
+  .tracker-progress-track {
+    margin-top: 1rem;
+    height: 0.75rem;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(80, 7, 36, 0.7);
+  }
+
+  .tracker-progress-bar {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #d946ef 0%, #67e8f9 55%, #bef264 100%);
+    box-shadow: 0 0 24px rgba(34, 211, 238, 0.4);
+    transition: width 150ms ease;
+  }
+
+  .tracker-message {
+    border-radius: 1rem;
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+  }
+
+  .tracker-message--success {
+    border: 1px solid rgba(190, 242, 100, 0.3);
+    background: rgba(190, 242, 100, 0.1);
+    color: rgb(236 252 203);
+  }
+
+  .tracker-message--error {
+    border: 1px solid rgba(244, 114, 182, 0.35);
+    background: rgba(217, 70, 239, 0.12);
+    color: rgb(252 231 243);
+  }
+
+  .tracker-message--info {
+    border: 1px solid rgba(103, 232, 249, 0.3);
+    background: rgba(103, 232, 249, 0.1);
+    color: rgb(224 242 254);
+  }
+}

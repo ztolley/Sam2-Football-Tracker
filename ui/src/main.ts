@@ -1,2 +1,2 @@
 import './styles.css';
-import './tracker-app';
+import './tracker/components/tracker-app/tracker-app';

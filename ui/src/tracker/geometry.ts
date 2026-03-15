@@ -1,4 +1,4 @@
-import type { TrackingBox, VideoAsset } from '../../state/app-state';
+import type { TrackingBox, VideoAsset } from '../state/app-state';
 import type { DraftBox } from './types';
 
 export function pointerPosition(

@@ -1,5 +1,5 @@
-import type { JobSummary } from '../../../state/app-state';
-import { markPlayerOffscreen, renderOutput } from '../../../lib/api';
+import type { JobSummary } from '../../state/app-state';
+import { markPlayerOffscreen, renderOutput } from '../../lib/api';
 import { waitForJobCompletion } from '../services/job-status-stream';
 import { syncPlaybackState } from '../services/video-playback';
 import {

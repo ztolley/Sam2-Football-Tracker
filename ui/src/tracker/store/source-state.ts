@@ -1,6 +1,6 @@
 import { signal } from '@lit-labs/signals';
 
-import type { VideoAsset } from '../../../state/app-state';
+import type { VideoAsset } from '../../state/app-state';
 
 // Source state covers which video is active plus UI feedback for source
 // management workflows such as upload and deletion.

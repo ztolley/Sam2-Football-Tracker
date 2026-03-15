@@ -1,4 +1,4 @@
-import type { JobSummary, VideoAsset } from '../../../state/app-state';
+import type { JobSummary, VideoAsset } from '../../state/app-state';
 import { jobs } from './processing-state';
 import { selectedVideoId, videos } from './source-state';
 

@@ -1,6 +1,6 @@
 import { signal } from '@lit-labs/signals';
 
-import type { JobSummary } from '../../../state/app-state';
+import type { JobSummary } from '../../state/app-state';
 
 // Processing state tracks the current backend job snapshot and the overlay
 // labels derived from it while the user waits for work to complete.

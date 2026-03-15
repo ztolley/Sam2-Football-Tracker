@@ -1,0 +1,71 @@
+@layer components {
+  .tracker-button,
+  .tracker-link-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 0.5rem 1rem;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition:
+      background-color 150ms ease,
+      opacity 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .tracker-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
+  .tracker-button--cyan {
+    border: 1px solid rgba(103, 232, 249, 0.6);
+    background: rgb(103 232 249);
+    color: rgb(15 23 42);
+    box-shadow: 0 0 24px rgba(34, 211, 238, 0.32);
+  }
+
+  .tracker-button--cyan:hover:not(:disabled) {
+    background: rgb(165 243 252);
+  }
+
+  .tracker-button--fuchsia {
+    border: 1px solid rgba(249, 168, 212, 0.6);
+    background: rgb(217 70 239);
+    color: #fff;
+    box-shadow: 0 0 24px rgba(217, 70, 239, 0.4);
+  }
+
+  .tracker-button--fuchsia:hover:not(:disabled) {
+    background: rgb(232 121 249);
+  }
+
+  .tracker-button--lime {
+    border: 1px solid rgba(190, 242, 100, 0.7);
+    background: rgb(190 242 100);
+    color: rgb(28 25 23);
+    box-shadow: 0 0 24px rgba(190, 242, 100, 0.3);
+  }
+
+  .tracker-button--lime:hover:not(:disabled) {
+    background: rgb(217 249 157);
+  }
+
+  .tracker-button--delete {
+    box-shadow: 0 0 20px rgba(217, 70, 239, 0.24);
+  }
+
+  .tracker-link-button {
+    border: 1px solid rgba(103, 232, 249, 0.55);
+    background: rgba(103, 232, 249, 0.12);
+    color: rgb(224 242 254);
+    box-shadow: 0 0 18px rgba(34, 211, 238, 0.12);
+  }
+
+  .tracker-link-button:hover {
+    background: rgba(103, 232, 249, 0.18);
+  }
+}

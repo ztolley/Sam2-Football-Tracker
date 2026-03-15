@@ -1,0 +1,55 @@
+:host {
+  display: block;
+}
+
+@layer components {
+  .tracker-video-frame {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(217, 70, 239, 0.25);
+    border-radius: 26px;
+    background: #000;
+    box-shadow: 0 0 30px rgba(217, 70, 239, 0.12);
+  }
+
+  .tracker-video-element {
+    aspect-ratio: 16 / 9;
+    width: 100%;
+    background: #000;
+  }
+
+  .tracker-video-element--locked {
+    pointer-events: none;
+  }
+
+  .tracker-empty-state {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background:
+      linear-gradient(135deg, rgba(245, 158, 11, 0.16), transparent 28%),
+      linear-gradient(180deg, rgba(12, 10, 9, 0.2), rgba(12, 10, 9, 0.9)),
+      linear-gradient(120deg, #1c1917, #0c0a09);
+  }
+
+  .tracker-empty-state-frame {
+    position: absolute;
+    inset: 1.5rem;
+    border: 1px dashed rgba(68, 64, 60, 0.8);
+    border-radius: 26px;
+  }
+
+  .tracker-empty-state-copy {
+    position: absolute;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    left: 1.5rem;
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: 1rem;
+    background: rgba(12, 13, 23, 0.78);
+    padding: 1rem;
+  }
+
+  .tracker-copy-spacing {
+    margin-top: 0.75rem;
+  }
+}

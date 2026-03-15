@@ -1,4 +1,4 @@
-import { deleteVideo, fetchHealth, fetchJobs, fetchVideos, uploadVideo } from '../../../lib/api';
+import { deleteVideo, fetchHealth, fetchJobs, fetchVideos, uploadVideo } from '../../lib/api';
 import { reloadVideoPreview } from '../services/video-playback';
 import {
   apiStatus,

@@ -1,0 +1,61 @@
+:host {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+@layer components {
+  .tracker-overlay-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .tracker-display-box,
+  .tracker-draft-box,
+  .tracker-draft-confirm {
+    position: absolute;
+    z-index: 20;
+  }
+
+  .tracker-display-box {
+    border: 2px solid rgb(165 243 252);
+    background: rgba(103, 232, 249, 0.1);
+    box-shadow:
+      0 0 0 1px rgba(34, 211, 238, 0.35),
+      0 0 28px rgba(34, 211, 238, 0.24);
+  }
+
+  .tracker-draft-box {
+    border: 2px solid rgb(249 168 212);
+    background: rgba(232, 121, 249, 0.1);
+    box-shadow: 0 0 24px rgba(232, 121, 249, 0.28);
+  }
+
+  .tracker-draw-surface {
+    position: absolute;
+    inset: 0;
+  }
+
+  .tracker-draw-surface--armed {
+    cursor: crosshair;
+  }
+
+  .tracker-draw-surface--locked {
+    pointer-events: none;
+  }
+
+  .tracker-draft-confirm {
+    border: 1px solid rgba(190, 242, 100, 0.7);
+    border-radius: 999px;
+    background: rgb(190 242 100);
+    padding: 0.5rem 1.25rem;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: rgb(28 25 23);
+    box-shadow:
+      0 0 24px rgba(190, 242, 100, 0.45),
+      0 14px 30px rgba(0, 0, 0, 0.35);
+  }
+}

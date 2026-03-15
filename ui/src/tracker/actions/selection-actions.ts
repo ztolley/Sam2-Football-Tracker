@@ -1,4 +1,4 @@
-import type { TrackingBox } from '../../../state/app-state';
+import type { TrackingBox } from '../../state/app-state';
 import { waitForJobCompletion } from '../services/job-status-stream';
 import { syncPlaybackState } from '../services/video-playback';
 import {
@@ -18,7 +18,7 @@ import {
   renderMessage,
   resetDraftState,
 } from '../store';
-import { submitSelection } from '../../../lib/api';
+import { submitSelection } from '../../lib/api';
 import { setError } from './shared';
 
 // Selection actions translate local draw gestures into tracker prompts and then

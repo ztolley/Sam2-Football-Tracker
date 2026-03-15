@@ -1,10 +1,11 @@
 import { SignalWatcher } from '@lit-labs/signals';
-import { LitElement, html } from 'lit';
+import { LitElement, html, unsafeCSS } from 'lit';
 import { customElement } from 'lit/decorators.js';
 
 import type { TrackingBox } from '../../../state/app-state';
-import { draftToBox, draftRect, pointerPosition } from '../geometry';
-import { finishDraft, startDraft, updateDraft } from '../actions';
+import { draftToBox, draftRect, pointerPosition } from '../../geometry';
+import { finishDraft, startDraft, updateDraft } from '../../actions';
+import drawOverlayStyles from './tracker-draw-overlay.css?inline';
 import {
   draftBox,
   getActiveJob,
@@ -13,15 +14,13 @@ import {
   isDrawing,
   isProcessing,
   isVideoPaused,
-} from '../store';
+} from '../../store';
 
 // This overlay owns pointer interaction for drafting a player box. Keeping the
 // draw state here stops the main video panel from becoming pointer-event heavy.
 @customElement('tracker-draw-overlay')
 export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
-  protected createRenderRoot(): this {
-    return this;
-  }
+  static styles = unsafeCSS(drawOverlayStyles);
 
   private emitSelectionConfirmed(box: TrackingBox): void {
     this.dispatchEvent(
@@ -45,7 +44,7 @@ export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
     const boxHeight = (box.height / activeVideo.height) * 100;
 
     return html`<div
-      class="absolute border-2 border-cyan-200 bg-cyan-300/10 shadow-[0_0_0_1px_rgba(34,211,238,0.35),0_0_28px_rgba(34,211,238,0.24)]"
+      class="tracker-display-box"
       style=${`left:${left}%;top:${top}%;width:${boxWidth}%;height:${boxHeight}%;`}
     ></div>`;
   }
@@ -58,7 +57,7 @@ export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
 
     const rect = draftRect(currentDraft);
     return html`<div
-      class="absolute border-2 border-fuchsia-300 bg-fuchsia-400/10 shadow-[0_0_24px_rgba(232,121,249,0.28)]"
+      class="tracker-draft-box"
       style=${`left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;`}
     ></div>`;
   }
@@ -66,7 +65,7 @@ export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
   private handleConfirmSelection(): void {
     const currentDraft = draftBox.get();
     const activeVideo = getActiveVideo();
-    const overlay = this.querySelector(
+    const overlay = this.renderRoot.querySelector(
       'div[data-draw-surface="true"]',
     ) as HTMLDivElement | null;
     if (!currentDraft || !activeVideo || !overlay) {
@@ -102,7 +101,7 @@ export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
     return html`<button
       type="button"
       data-testid="confirm-selection-button"
-      class="absolute z-20 rounded-full border border-lime-300/70 bg-lime-300 px-5 py-2 font-['Space_Grotesk'] text-sm font-semibold text-stone-950 shadow-[0_0_24px_rgba(190,242,100,0.45),0_14px_30px_rgba(0,0,0,0.35)] transition hover:bg-lime-200"
+      class="tracker-draft-confirm"
       style=${`left:${buttonLeft}px;top:${buttonTop}px;`}
       @click=${this.handleConfirmSelection}
     >
@@ -137,7 +136,7 @@ export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
     const paused = isVideoPaused.get();
 
     return html`
-      <div class="pointer-events-none absolute inset-0">
+      <div class="tracker-overlay-layer">
         ${this.renderDisplayBox(
           activeJob?.player_visible && !activeJob?.processed_media_url
             ? activeJob.latest_box
@@ -149,31 +148,16 @@ export class TrackerDrawOverlay extends SignalWatcher(LitElement) {
         ? html`<div
             data-draw-surface="true"
             data-testid="draw-surface"
-            class="${isProcessing.get()
-              ? 'pointer-events-none'
+            class="tracker-draw-surface ${isProcessing.get()
+              ? 'tracker-draw-surface--locked'
               : isDrawArmed.get() || isDrawing.get()
-                ? 'cursor-crosshair'
-                : 'pointer-events-none'} absolute inset-0"
+                ? 'tracker-draw-surface--armed'
+                : 'tracker-draw-surface--locked'}"
             @pointerdown=${this.onPointerDown}
             @pointermove=${this.onPointerMove}
             @pointerup=${this.onPointerUp}
             @pointerleave=${this.onPointerUp}
           ></div>`
-        : null}
-      ${paused
-        ? html`<div
-            class="pointer-events-none absolute top-4 left-4 z-10 rounded-full bg-stone-950/80 px-4 py-2 font-mono text-xs tracking-[0.2em] text-stone-100 uppercase"
-          >
-            <span
-              class="text-cyan-200 drop-shadow-[0_0_10px_rgba(34,211,238,0.55)]"
-            >
-              ${isDrawArmed.get()
-                ? activeJob?.latest_box
-                  ? 'Draw correction'
-                  : 'Draw player'
-                : 'Paused'}
-            </span>
-          </div>`
         : null}
       ${currentDraft ? this.renderDraftControls() : null}
     `;

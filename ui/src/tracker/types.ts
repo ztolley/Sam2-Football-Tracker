@@ -1,4 +1,4 @@
-import type { JobSummary } from '../../state/app-state';
+import type { JobSummary } from '../state/app-state';
 
 export type DraftBox = {
   startX: number;

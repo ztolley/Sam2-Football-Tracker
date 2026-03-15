@@ -1,5 +1,5 @@
-import type { JobSummary } from '../../../state/app-state';
-import { streamJob } from '../../../lib/api';
+import type { JobSummary } from '../../state/app-state';
+import { streamJob } from '../../lib/api';
 import type { TrackerJobUpdateHandler } from '../types';
 
 // SSE is a better fit than tight polling here: the browser only needs
